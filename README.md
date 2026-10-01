@@ -51,7 +51,7 @@ The app runs on the console's stock firmware (tested with 20260915).
    On macOS use Terminal, since double-clicking the archive
    puts everything into an extra folder (`NO NAME` is the card's name):
    ```sh
-   unzip -o ~/Downloads/rgdsplus-charge-tune-v0.1.0.zip -d "/Volumes/NO NAME"
+   unzip -o ~/Downloads/rgdsplus-charge-tune-v0.0.1.zip -d "/Volumes/NO NAME"
    diskutil eject "/Volumes/NO NAME"
    ```
 3. Start **RG DS Plus Charge Tune** from *Applications* or *Ports*.
