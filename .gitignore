@@ -1,0 +1,28 @@
+# build outputs
+/build/
+/dist/
+*.log
+
+# local dev data (settings, logs) and the fake console
+/devdata/
+/devroot/
+
+# console connection settings for task deploy/logs/status/debug
+.env
+
+# boot partition dumps and backups: Anbernic's kernel, not ours to publish
+*.img
+
+# editors / OS
+.DS_Store
+.idea/
+*.swp
+
+# go test artifacts
+*.test
+*.out
+coverage.*
+
+# local notes on the device and plans, kept out of git
+/docs/devices/
+/docs/plans/

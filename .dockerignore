@@ -1,0 +1,10 @@
+.git
+build
+dist
+devroot
+devdata
+*.log
+*.img
+.env
+.vscode
+.idea

@@ -1,0 +1,425 @@
+package internal
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/BrandonKowalski/gabagool/v2/pkg/gabagool/constants"
+	"github.com/veandco/go-sdl2/sdl"
+)
+
+var inputMappingBytes []byte
+var flipFaceButtons bool
+
+// SetInputMappingBytes sets the input mapping data from embedded JSON bytes.
+func SetInputMappingBytes(data []byte) {
+	inputMappingBytes = data
+}
+
+// SetFlipFaceButtons enables or disables face button flipping.
+// When true, uses direct mapping (A=A, B=B, X=X, Y=Y) instead of the default swap.
+// Can be called at runtime; the change takes effect immediately if the input processor is initialized.
+func SetFlipFaceButtons(flip bool) {
+	flipFaceButtons = flip
+	if globalInputProcessor != nil {
+		globalInputProcessor.ReloadMapping()
+	}
+}
+
+// Source identifies the physical input source for an event.
+type Source int
+
+const (
+	SourceKeyboard Source = iota
+	SourceController
+	SourceJoystick
+	SourceJoystickAxisPositive
+	SourceJoystickAxisNegative
+	SourceHatSwitch
+)
+
+// Event represents a processed input event with the mapped virtual button.
+type Event struct {
+	Button  constants.VirtualButton // The mapped virtual button
+	Pressed bool                    // true for press, false for release
+	Source  Source                  // The physical input source
+	RawCode int                     // The raw SDL code for the input
+}
+
+// ComboType distinguishes between chord and sequence combinations
+type ComboType int
+
+const (
+	ComboTypeChord ComboType = iota
+	ComboTypeSequence
+)
+
+// ComboEvent represents a triggered button combination
+type ComboEvent struct {
+	ComboID   string                    // Unique identifier for the combo
+	ComboType ComboType                 // Chord or Sequence
+	Buttons   []constants.VirtualButton // Buttons involved in the combo
+	Triggered bool                      // true on activation, false on release (chords only)
+}
+
+// ComboCallback is called when a combo is triggered or released
+type ComboCallback func()
+
+// ChordOptions configures chord detection behavior
+type ChordOptions struct {
+	Window    time.Duration // Time window for simultaneous press (default: 100ms)
+	OnTrigger ComboCallback // Called when the chord is activated (all buttons pressed)
+	OnRelease ComboCallback // Called when the chord is released (any button released)
+}
+
+// SequenceOptions configures sequence detection behavior
+type SequenceOptions struct {
+	Timeout   time.Duration // Max time between sequence inputs (default: 500ms)
+	Strict    bool          // If true, sequence breaks on any non-sequence button
+	OnTrigger ComboCallback // Called when the sequence is completed
+}
+
+// JoystickAxisMapping maps an analog axis to two virtual buttons based on direction.
+type JoystickAxisMapping struct {
+	PositiveButton constants.VirtualButton // Button for positive axis values (right/down)
+	NegativeButton constants.VirtualButton // Button for negative axis values (left/up)
+	Threshold      int16                   // Axis value threshold to trigger button press
+}
+
+// InputMapping defines the mapping from physical inputs to virtual buttons.
+// This allows the framework to work with different controller configurations.
+type InputMapping struct {
+	KeyboardMap         map[sdl.Keycode]constants.VirtualButton              // Keyboard key mappings
+	ControllerButtonMap map[sdl.GameControllerButton]constants.VirtualButton // SDL game controller button mappings
+	ControllerHatMap    map[uint8]constants.VirtualButton                    // D-pad/hat switch mappings (controller)
+	JoystickAxisMap     map[uint8]JoystickAxisMapping                        // Analog axis mappings
+	JoystickButtonMap   map[uint8]constants.VirtualButton                    // Raw joystick button mappings
+	JoystickHatMap      map[uint8]constants.VirtualButton                    // D-pad/hat switch mappings (joystick)
+}
+
+type Mapping struct {
+	KeyboardMap map[int]int `json:"keyboard_map"`
+
+	ControllerButtonMap map[int]int `json:"controller_button_map"`
+
+	ControllerHatMap map[int]int `json:"controller_hat_map"`
+
+	JoystickAxisMap map[int]struct {
+		PositiveButton int   `json:"positive_button"`
+		NegativeButton int   `json:"negative_button"`
+		Threshold      int16 `json:"threshold"`
+	} `json:"joystick_axis_map"`
+
+	JoystickButtonMap map[int]int `json:"joystick_button_map"`
+
+	JoystickHatMap map[int]int `json:"joystick_hat_map"`
+}
+
+func DefaultInputMapping() *InputMapping {
+	return &InputMapping{
+		KeyboardMap: map[sdl.Keycode]constants.VirtualButton{
+			sdl.K_UP:        constants.VirtualButtonUp,
+			sdl.K_DOWN:      constants.VirtualButtonDown,
+			sdl.K_LEFT:      constants.VirtualButtonLeft,
+			sdl.K_RIGHT:     constants.VirtualButtonRight,
+			sdl.K_a:         constants.VirtualButtonA,
+			sdl.K_b:         constants.VirtualButtonB,
+			sdl.K_x:         constants.VirtualButtonX,
+			sdl.K_y:         constants.VirtualButtonY,
+			sdl.K_l:         constants.VirtualButtonL1,
+			sdl.K_SEMICOLON: constants.VirtualButtonL2,
+			sdl.K_r:         constants.VirtualButtonR1,
+			sdl.K_t:         constants.VirtualButtonR2,
+			sdl.K_RETURN:    constants.VirtualButtonStart,
+			sdl.K_SPACE:     constants.VirtualButtonSelect,
+			sdl.K_h:         constants.VirtualButtonMenu,
+		},
+		ControllerButtonMap: map[sdl.GameControllerButton]constants.VirtualButton{
+			sdl.CONTROLLER_BUTTON_DPAD_UP:       constants.VirtualButtonUp,
+			sdl.CONTROLLER_BUTTON_DPAD_DOWN:     constants.VirtualButtonDown,
+			sdl.CONTROLLER_BUTTON_DPAD_LEFT:     constants.VirtualButtonLeft,
+			sdl.CONTROLLER_BUTTON_DPAD_RIGHT:    constants.VirtualButtonRight,
+			sdl.CONTROLLER_BUTTON_A:             constants.VirtualButtonB,
+			sdl.CONTROLLER_BUTTON_B:             constants.VirtualButtonA,
+			sdl.CONTROLLER_BUTTON_X:             constants.VirtualButtonY,
+			sdl.CONTROLLER_BUTTON_Y:             constants.VirtualButtonX,
+			sdl.CONTROLLER_BUTTON_LEFTSHOULDER:  constants.VirtualButtonL1,
+			sdl.CONTROLLER_BUTTON_RIGHTSHOULDER: constants.VirtualButtonR1,
+			sdl.CONTROLLER_BUTTON_START:         constants.VirtualButtonStart,
+			sdl.CONTROLLER_BUTTON_BACK:          constants.VirtualButtonSelect,
+			sdl.CONTROLLER_BUTTON_GUIDE:         constants.VirtualButtonMenu,
+		},
+	}
+}
+
+// h700InputMappingJSON is the default input mapping for h700 devices, whose
+// pad presents as a raw SDL joystick (not a recognized game controller), so the
+// generic DefaultInputMapping does not cover its buttons or d-pad hat.
+const h700InputMappingJSON = `{
+  "keyboard_map": {},
+  "controller_button_map": {},
+  "controller_hat_map": {},
+  "joystick_axis_map": {},
+  "joystick_button_map": {
+    "10": 13,
+    "11": 15,
+    "12": 10,
+    "13": 12,
+    "3": 5,
+    "4": 6,
+    "5": 8,
+    "6": 7,
+    "7": 9,
+    "8": 11,
+    "9": 14
+  },
+  "joystick_hat_map": {
+    "1": 1,
+    "2": 4,
+    "4": 2,
+    "8": 3
+  }
+}`
+
+// platformDefaultInputMapping returns a platform-specific default mapping when
+// the current PLATFORM needs one, otherwise the generic DefaultInputMapping.
+// This is the lowest-precedence source: explicit overrides (embedded bytes or
+// the INPUT_MAPPING_PATH env var) still take priority in GetInputMapping.
+func platformDefaultInputMapping() *InputMapping {
+	platformEnv := strings.ToLower(strings.TrimSpace(os.Getenv("PLATFORM")))
+	if strings.Contains(platformEnv, "h700") {
+		if m, err := LoadInputMappingFromBytes([]byte(h700InputMappingJSON)); err == nil {
+			return m
+		}
+		GetInternalLogger().Warn("Failed to load h700 input mapping, using default")
+	}
+	return DefaultInputMapping()
+}
+
+// GetInputMapping returns the input mapping from embedded bytes if set,
+// from the environment variable if set, otherwise returns the default mapping.
+// If FlipFaceButtons is enabled (via SetFlipFaceButtons or FLIP_FACE_BUTTONS env var),
+// the face button swap is disabled, giving direct mapping (A=A, B=B, X=X, Y=Y).
+func GetInputMapping() *InputMapping {
+	logger := GetInternalLogger()
+
+	var mapping *InputMapping
+
+	if len(inputMappingBytes) > 0 {
+		m, err := LoadInputMappingFromBytes(inputMappingBytes)
+		if err == nil {
+			logger.Info("Loaded custom input mapping from embedded bytes")
+			mapping = m
+		} else {
+			logger.Warn("Failed to load custom input mapping from bytes, trying file path", "error", err)
+		}
+	}
+
+	if mapping == nil {
+		mappingPath := os.Getenv(constants.InputMappingPathEnvVar)
+		if mappingPath != "" {
+			m, err := LoadInputMappingFromJSON(mappingPath)
+			if err == nil {
+				logger.Info("Loaded custom input mapping from environment variable", "path", mappingPath)
+				mapping = m
+			} else {
+				logger.Warn("Failed to load custom input mapping, using default", "path", mappingPath, "error", err)
+			}
+		}
+	}
+
+	if mapping == nil {
+		mapping = platformDefaultInputMapping()
+	}
+
+	// Check if face buttons should be flipped to direct mapping
+	if shouldFlipFaceButtons() {
+		logger.Info("Flipping face buttons to direct mapping (A=A, B=B, X=X, Y=Y)")
+		for key, val := range mapping.ControllerButtonMap {
+			switch val {
+			case constants.VirtualButtonA:
+				mapping.ControllerButtonMap[key] = constants.VirtualButtonB
+			case constants.VirtualButtonB:
+				mapping.ControllerButtonMap[key] = constants.VirtualButtonA
+			case constants.VirtualButtonX:
+				mapping.ControllerButtonMap[key] = constants.VirtualButtonY
+			case constants.VirtualButtonY:
+				mapping.ControllerButtonMap[key] = constants.VirtualButtonX
+			}
+		}
+
+		// Also swap in the joystick button map for devices that use raw joystick events
+		for key, val := range mapping.JoystickButtonMap {
+			switch val {
+			case constants.VirtualButtonA:
+				mapping.JoystickButtonMap[key] = constants.VirtualButtonB
+			case constants.VirtualButtonB:
+				mapping.JoystickButtonMap[key] = constants.VirtualButtonA
+			case constants.VirtualButtonX:
+				mapping.JoystickButtonMap[key] = constants.VirtualButtonY
+			case constants.VirtualButtonY:
+				mapping.JoystickButtonMap[key] = constants.VirtualButtonX
+			}
+		}
+
+		// Also swap in the keyboard map for dev/testing
+		for key, val := range mapping.KeyboardMap {
+			switch val {
+			case constants.VirtualButtonA:
+				mapping.KeyboardMap[key] = constants.VirtualButtonB
+			case constants.VirtualButtonB:
+				mapping.KeyboardMap[key] = constants.VirtualButtonA
+			case constants.VirtualButtonX:
+				mapping.KeyboardMap[key] = constants.VirtualButtonY
+			case constants.VirtualButtonY:
+				mapping.KeyboardMap[key] = constants.VirtualButtonX
+			}
+		}
+	}
+
+	return mapping
+}
+
+// shouldFlipFaceButtons returns true if face buttons should use direct mapping.
+func shouldFlipFaceButtons() bool {
+	if flipFaceButtons {
+		return true
+	}
+	env := os.Getenv(constants.FlipFaceButtonsEnvVar)
+	return env == "1" || env == "true"
+}
+
+func LoadInputMappingFromJSON(filePath string) (*InputMapping, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read JSON file: %w", err)
+	}
+	return LoadInputMappingFromBytes(data)
+}
+
+func LoadInputMappingFromBytes(data []byte) (*InputMapping, error) {
+	var serializableMapping Mapping
+	err := json.Unmarshal(data, &serializableMapping)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
+	}
+
+	mapping := &InputMapping{
+		KeyboardMap:         make(map[sdl.Keycode]constants.VirtualButton),
+		ControllerButtonMap: make(map[sdl.GameControllerButton]constants.VirtualButton),
+		ControllerHatMap:    make(map[uint8]constants.VirtualButton),
+		JoystickAxisMap:     make(map[uint8]JoystickAxisMapping),
+		JoystickButtonMap:   make(map[uint8]constants.VirtualButton),
+		JoystickHatMap:      make(map[uint8]constants.VirtualButton),
+	}
+
+	if serializableMapping.KeyboardMap != nil {
+		for keyCode, button := range serializableMapping.KeyboardMap {
+			mapping.KeyboardMap[sdl.Keycode(keyCode)] = constants.VirtualButton(button)
+		}
+	}
+
+	if serializableMapping.ControllerButtonMap != nil {
+		for button, vb := range serializableMapping.ControllerButtonMap {
+			mapping.ControllerButtonMap[sdl.GameControllerButton(button)] = constants.VirtualButton(vb)
+		}
+	}
+
+	if serializableMapping.ControllerHatMap != nil {
+		for hat, button := range serializableMapping.ControllerHatMap {
+			mapping.ControllerHatMap[uint8(hat)] = constants.VirtualButton(button)
+		}
+	}
+
+	if serializableMapping.JoystickAxisMap != nil {
+		for axis, axisMapping := range serializableMapping.JoystickAxisMap {
+			mapping.JoystickAxisMap[uint8(axis)] = JoystickAxisMapping{
+				PositiveButton: constants.VirtualButton(axisMapping.PositiveButton),
+				NegativeButton: constants.VirtualButton(axisMapping.NegativeButton),
+				Threshold:      axisMapping.Threshold,
+			}
+		}
+	}
+
+	if serializableMapping.JoystickButtonMap != nil {
+		for button, vb := range serializableMapping.JoystickButtonMap {
+			mapping.JoystickButtonMap[uint8(button)] = constants.VirtualButton(vb)
+		}
+	}
+
+	if serializableMapping.JoystickHatMap != nil {
+		for hat, button := range serializableMapping.JoystickHatMap {
+			mapping.JoystickHatMap[uint8(hat)] = constants.VirtualButton(button)
+		}
+	}
+
+	return mapping, nil
+}
+
+// ToJSON converts the InputMapping to JSON bytes in the export format.
+// Keys are SDL codes, values are VirtualButton iota values.
+func (im *InputMapping) ToJSON() ([]byte, error) {
+	serializableMapping := &Mapping{
+		KeyboardMap:         make(map[int]int),
+		ControllerButtonMap: make(map[int]int),
+		ControllerHatMap:    make(map[int]int),
+		JoystickAxisMap: make(map[int]struct {
+			PositiveButton int   `json:"positive_button"`
+			NegativeButton int   `json:"negative_button"`
+			Threshold      int16 `json:"threshold"`
+		}),
+		JoystickButtonMap: make(map[int]int),
+		JoystickHatMap:    make(map[int]int),
+	}
+
+	for keyCode, button := range im.KeyboardMap {
+		serializableMapping.KeyboardMap[int(keyCode)] = int(button)
+	}
+
+	for button, vb := range im.ControllerButtonMap {
+		serializableMapping.ControllerButtonMap[int(button)] = int(vb)
+	}
+
+	for hat, button := range im.ControllerHatMap {
+		serializableMapping.ControllerHatMap[int(hat)] = int(button)
+	}
+
+	for axis, axisMapping := range im.JoystickAxisMap {
+		serializableMapping.JoystickAxisMap[int(axis)] = struct {
+			PositiveButton int   `json:"positive_button"`
+			NegativeButton int   `json:"negative_button"`
+			Threshold      int16 `json:"threshold"`
+		}{
+			PositiveButton: int(axisMapping.PositiveButton),
+			NegativeButton: int(axisMapping.NegativeButton),
+			Threshold:      axisMapping.Threshold,
+		}
+	}
+
+	for button, vb := range im.JoystickButtonMap {
+		serializableMapping.JoystickButtonMap[int(button)] = int(vb)
+	}
+
+	for hat, button := range im.JoystickHatMap {
+		serializableMapping.JoystickHatMap[int(hat)] = int(button)
+	}
+
+	return json.MarshalIndent(serializableMapping, "", "  ")
+}
+
+func (im *InputMapping) SaveToJSON(filePath string) error {
+	data, err := im.ToJSON()
+	if err != nil {
+		return fmt.Errorf("failed to marshal mapping to JSON: %w", err)
+	}
+
+	err = os.WriteFile(filePath, data, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write JSON file: %w", err)
+	}
+
+	return nil
+}

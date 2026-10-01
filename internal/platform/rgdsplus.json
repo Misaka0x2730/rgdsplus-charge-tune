@@ -1,0 +1,37 @@
+{
+  "name": "rgdsplus",
+  "board_file": "/mnt/vendor/oem/board.ini",
+  "board_names": ["RGdsplus"],
+  "firmware_file": "/mnt/vendor/oem/version.ini",
+  "soc_compatible": "rockchip,rk3568",
+  "device_tree": "/proc/device-tree",
+  "charger_node": "/i2c@fdd40000/pmic@20/charger",
+  "boot_partition": "/dev/block/by-name/boot",
+  "boot_size": 67108864,
+  "backup_locations": [
+    { "id": "tf2", "label": "TF2", "card": "/mnt/sdcard", "dir": "/mnt/sdcard/rgdsplus-charge-tune/backups" },
+    { "id": "tf1", "label": "TF1", "card": "/mnt/mmc", "dir": "/mnt/mmc/rgdsplus-charge-tune/backups" }
+  ],
+  "battery_capacity_file": "/sys/class/power_supply/cw2015-battery/capacity",
+  "charger_online_files": ["/sys/class/power_supply/ac/online", "/sys/class/power_supply/usb/online"],
+  "min_battery_percent": 20,
+  "stock_mode": "stock",
+  "modes": [
+    { "id": "stock", "charge_ma": 2000, "input_ma": 1500, "recommended": true },
+    { "id": "play_charging", "charge_ma": 2000, "input_ma": 3000 },
+    { "id": "fast", "charge_ma": 2500, "input_ma": 3000, "warning": true },
+    { "id": "gentle", "charge_ma": 1000, "input_ma": 2000 }
+  ],
+  "language_file": "/mnt/vendor/oem/language.ini",
+  "language_codes": ["zh-Hans", "zh-Hant", "en", "ja", "ko", "es", "ru", "de", "fr", "pt"],
+  "screen_swap_file": "/sys/class/anbernic_misc/lcdswap",
+  "lid_file": "/sys/class/anbernic_misc/hallkey",
+  "lid_closed_value": "2",
+  "sleep_cmd": "/mnt/vendor/ctrl/pwr_new.sh auto",
+  "sleep_timer_file": "/mnt/data/dmenu/dmenu_attr.ini",
+  "sleep_timer_file_size": 184,
+  "sleep_timer_offset": 40,
+  "sleep_timer_seconds": [60, 120, 300, 600, 0],
+  "inhibit_sleep_cmd": "",
+  "allow_sleep_cmd": ""
+}

@@ -1,0 +1,218 @@
+// Package gabagool provides a UI framework for building graphical applications
+// on embedded Linux devices, particularly handheld gaming consoles running
+// custom firmware like NextUI.
+//
+// The package handles SDL initialization, input processing, theming, and provides
+// various UI components including lists, detail views, keyboards, and dialogs.
+package gabagool
+
+import (
+	"log/slog"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/BrandonKowalski/gabagool/v2/pkg/gabagool/constants"
+	"github.com/BrandonKowalski/gabagool/v2/pkg/gabagool/internal"
+	"github.com/BrandonKowalski/gabagool/v2/pkg/gabagool/platform/nextui"
+)
+
+// DisplayOrientation specifies the clockwise rotation applied to the display output.
+type DisplayOrientation = internal.DisplayOrientation
+
+// DisabledInputSources controls which physical input event types are ignored by
+// the input processor. The zero value enables all sources (safe default).
+//
+// Example — disable keyboard events (useful on devices where CFW remaps
+// controller buttons to keyboard keys, causing duplicate events):
+//
+//	gabagool.Init(gabagool.Options{
+//	    DisabledInputSources: gabagool.DisabledInputSources{Keyboard: true},
+//	})
+type DisabledInputSources = internal.DisabledInputSources
+
+const (
+	OrientationNormal    DisplayOrientation = internal.OrientationNormal    // No rotation
+	OrientationRotate90  DisplayOrientation = internal.OrientationRotate90  // 90° clockwise
+	OrientationRotate180 DisplayOrientation = internal.OrientationRotate180 // 180°
+	OrientationRotate270 DisplayOrientation = internal.OrientationRotate270 // 270° clockwise (90° counter-clockwise)
+)
+
+// Options configures the gabagool UI framework initialization.
+type Options struct {
+	WindowTitle          string                 // Window title displayed in windowed mode
+	ShowBackground       bool                   // Whether to render the theme background
+	WindowOptions        internal.WindowOptions // SDL window flags (borderless, resizable, etc.)
+	PrimaryThemeColorHex uint32                 // Custom accent color (ignored on NextUI which uses system theme)
+	IsNextUI             bool                   // Enable NextUI CFW theming and power button handling
+	ControllerConfigFile string                 // Path to custom controller mapping file
+	LogPath              string                 // Full path for log file including filename (creates parent directories)
+	LogFilename          string                 // Deprecated: Use LogPath instead. Log filename within "logs" directory.
+	FlipFaceButtons      bool                   // Use direct face button mapping (A=A, B=B) instead of Nintendo-style swap
+	DisplayOrientation   DisplayOrientation     // Clockwise rotation of the display (0, 90, 180, 270 degrees)
+	DisabledInputSources DisabledInputSources   // Input event types to ignore (keyboard, controller, joystick)
+}
+
+// Init initializes the SDL subsystems, theming, and input handling.
+// Must be called before any other gabagool functions.
+// If INPUT_CAPTURE environment variable is set, runs the input logger wizard instead.
+func Init(options Options) {
+	if options.LogPath != "" {
+		internal.SetLogPath(options.LogPath)
+	} else if options.LogFilename != "" {
+		internal.SetLogFilename(options.LogFilename)
+	}
+
+	if os.Getenv(constants.NitratesEnvVar) != "" || os.Getenv(constants.InputCaptureEnvVar) != "" {
+		internal.SetInternalLogLevel(slog.LevelDebug)
+	} else {
+		internal.SetInternalLogLevel(slog.LevelError)
+	}
+
+	// Set face button flip preference before input mapping is loaded
+	internal.SetFlipFaceButtons(options.FlipFaceButtons)
+
+	pbc := internal.PowerButtonConfig{}
+
+	if options.IsNextUI {
+		theme := nextui.InitNextUITheme()
+
+		// Detect power button input device path based on platform.
+		// tg5040: /dev/input/event1 for power button, button code 116.
+		// tg5050: /dev/input/event2 for power button, button code 116.
+		// my355:  /dev/input/event2 for power button, button code 102.
+		// h700:   /dev/input/event0 for power button, button code 116.
+		powerDevicePath := "/dev/input/unknown"
+		powerButtonCode := -1 // BUTTON_NA
+
+		platformEnv := strings.ToLower(strings.TrimSpace(os.Getenv("PLATFORM")))
+		if strings.Contains(platformEnv, "tg5040") {
+			powerDevicePath = "/dev/input/event1"
+			powerButtonCode = 116 // BUTTON_POWER
+		} else if strings.Contains(platformEnv, "tg5050") {
+			powerDevicePath = "/dev/input/event2"
+			powerButtonCode = 116 // BUTTON_POWER
+		} else if strings.Contains(platformEnv, "my355") {
+			powerDevicePath = "/dev/input/event2"
+			powerButtonCode = 102 // CODE_POWER for my355
+		} else if strings.Contains(platformEnv, "h700") {
+			powerDevicePath = "/dev/input/event0"
+			powerButtonCode = 116 // BUTTON_POWER
+		}
+
+		pbc = internal.PowerButtonConfig{
+			ButtonCode:      powerButtonCode,
+			DevicePath:      powerDevicePath,
+			ShortPressMax:   2 * time.Second,
+			CoolDownTime:    1 * time.Second,
+			SuspendScript:   "/mnt/SDCARD/.system/" + platformEnv + "/bin/suspend",
+			ShutdownCommand: "/sbin/poweroff", // TODO: touch /tmp/poweroff and exit
+		}
+		internal.SetTheme(theme)
+	} else {
+		internal.SetTheme(internal.DefaultTheme())
+	}
+
+	if options.PrimaryThemeColorHex != 0 && !options.IsNextUI {
+		theme := internal.GetTheme()
+		theme.AccentColor = internal.HexToColor(options.PrimaryThemeColorHex)
+		internal.SetTheme(theme)
+	}
+
+	internal.Init(options.WindowTitle, options.ShowBackground, options.WindowOptions, options.DisplayOrientation, pbc)
+
+	if (options.DisabledInputSources != DisabledInputSources{}) {
+		internal.SetDisabledInputSources(options.DisabledInputSources)
+	}
+
+	if os.Getenv(constants.InputCaptureEnvVar) != "" {
+		mapping := ShowInputCapture(InputCaptureOptions{})
+		err := mapping.SaveToJSON("custom_input_mapping.json")
+		if err != nil {
+			internal.GetInternalLogger().Error("Failed to save custom input mapping", "error", err)
+		}
+		os.Exit(0)
+	}
+}
+
+// Close releases all SDL resources and shuts down the UI framework.
+// Must be called before program exit to prevent resource leaks.
+func Close() {
+	internal.SDLCleanup()
+}
+
+// SetLogPath sets the full path for the log file, including filename.
+// Creates all necessary parent directories.
+// Call before Init() to take effect during initialization.
+func SetLogPath(path string) {
+	internal.SetLogPath(path)
+}
+
+// SetLogFilename sets the filename for the log file within the "logs" directory.
+// Deprecated: Use SetLogPath instead for full path support.
+// Call before Init() to take effect during initialization.
+func SetLogFilename(filename string) {
+	internal.SetLogFilename(filename)
+}
+
+// GetLogger returns the application logger for structured logging.
+func GetLogger() *slog.Logger {
+	return internal.GetLogger()
+}
+
+// SetLogLevel sets the minimum log level for the application logger.
+func SetLogLevel(level slog.Level) {
+	internal.SetLogLevel(level)
+}
+
+// SetRawLogLevel parses and sets the log level from a string (e.g., "debug", "info", "error").
+func SetRawLogLevel(level string) {
+	internal.SetRawLogLevel(level)
+}
+
+// SetInputMappingBytes loads a custom input mapping from JSON bytes.
+// Use this to override the default controller/keyboard bindings.
+func SetInputMappingBytes(data []byte) {
+	internal.SetInputMappingBytes(data)
+}
+
+// SetFlipFaceButtons enables or disables direct face button mapping.
+// When true, uses A=A, B=B, X=X, Y=Y instead of the default Nintendo-style swap.
+// Can also be set via the FLIP_FACE_BUTTONS environment variable.
+// Can be called before or after Init(); changes take effect immediately.
+func SetFlipFaceButtons(flip bool) {
+	internal.SetFlipFaceButtons(flip)
+}
+
+// SetDisabledInputSources updates which physical input event types are ignored.
+// Can be called at any time after Init() to adjust input handling at runtime.
+// For example, to suppress keyboard events on a device where the CFW remaps
+// controller buttons to keyboard keys (causing duplicate events):
+//
+//	gabagool.SetDisabledInputSources(gabagool.DisabledInputSources{Keyboard: true})
+func SetDisabledInputSources(s DisabledInputSources) {
+	internal.SetDisabledInputSources(s)
+}
+
+// GetWindow returns the underlying SDL window wrapper for advanced use cases.
+func GetWindow() *internal.Window {
+	return internal.GetWindow()
+}
+
+// HideWindow hides the application window.
+func HideWindow() {
+	internal.GetWindow().Window.Hide()
+}
+
+// ShowWindow shows the application window.
+func ShowWindow() {
+	internal.GetWindow().Window.Show()
+}
+
+// SetDirectionalRepeat sets how long a held direction waits before it
+// repeats and how fast it then repeats. It applies to screens opened after
+// the call. (DSFetch fork.)
+func SetDirectionalRepeat(delay, interval time.Duration) {
+	internal.RepeatDelay = delay
+	internal.RepeatInterval = interval
+}

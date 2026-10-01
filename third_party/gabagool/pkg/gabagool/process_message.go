@@ -1,0 +1,454 @@
+package gabagool
+
+import (
+	"bytes"
+	"fmt"
+	"image"
+	"image/png"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/BrandonKowalski/gabagool/v2/pkg/gabagool/constants"
+	"github.com/BrandonKowalski/gabagool/v2/pkg/gabagool/internal"
+	"github.com/srwiley/oksvg"
+	"github.com/srwiley/rasterx"
+	"github.com/veandco/go-sdl2/img"
+	"github.com/veandco/go-sdl2/sdl"
+	"go.uber.org/atomic"
+)
+
+type ProcessMessageOptions struct {
+	Image               string // Deprecated: Use ImageBytes instead. File path to image (PNG, JPEG, or SVG)
+	ImageBytes          []byte // Image data loaded from embedded resources (supports PNG, JPEG, and SVG)
+	ImageWidth          int32  // Desired width for rendering (required for SVG, optional for raster images)
+	ImageHeight         int32  // Desired height for rendering (required for SVG, optional for raster images)
+	ShowThemeBackground bool
+	ShowProgressBar     bool
+	Progress            *atomic.Float64
+	ProcessInput        bool                    // If true, process input events (enables chord/sequence detection)
+	CancelButton        constants.VirtualButton // If set, pressing this button exits with ErrCancelled
+	FooterHelpItems     []FooterHelpItem        // Button hints shown in footer
+}
+
+type processMessage struct {
+	window          *internal.Window
+	showBG          bool
+	message         string
+	isProcessing    bool
+	completeTime    time.Time
+	imageTexture    *sdl.Texture
+	imageWidth      int32
+	imageHeight     int32
+	showProgressBar bool
+	progress        *atomic.Float64
+	footerHelpItems []FooterHelpItem
+}
+
+// ProcessMessage displays a message while executing a function asynchronously.
+// The function is generic and returns the typed result of the function.
+//
+// Supports displaying images in PNG, JPEG, and SVG formats via ImageBytes or Image (legacy).
+// For SVG images, ImageWidth and ImageHeight should be specified for optimal rendering quality.
+func ProcessMessage[T any](message string, options ProcessMessageOptions, fn func() (T, error)) (T, error) {
+	processor := &processMessage{
+		window:          internal.GetWindow(),
+		showBG:          options.ShowThemeBackground,
+		imageWidth:      options.ImageWidth,
+		imageHeight:     options.ImageHeight,
+		message:         message,
+		isProcessing:    true,
+		showProgressBar: options.ShowProgressBar,
+		progress:        options.Progress,
+		footerHelpItems: options.FooterHelpItems,
+	}
+
+	// Load image from bytes (preferred) or from file path (legacy)
+	if len(options.ImageBytes) > 0 {
+		texture, err := loadImageTexture(processor.window.Renderer, options.ImageBytes, options.ImageWidth, options.ImageHeight)
+		if err == nil {
+			processor.imageTexture = texture
+		}
+	} else if options.Image != "" {
+		// Legacy file path support
+		if strings.HasSuffix(strings.ToLower(options.Image), ".svg") {
+			// Read SVG file
+			svgData, err := os.ReadFile(options.Image)
+			if err == nil {
+				texture, err := loadImageTexture(processor.window.Renderer, svgData, options.ImageWidth, options.ImageHeight)
+				if err == nil {
+					processor.imageTexture = texture
+				}
+			}
+		} else {
+			// Load raster image
+			img.Init(img.INIT_PNG | img.INIT_JPG)
+			texture, err := img.LoadTexture(processor.window.Renderer, options.Image)
+			if err == nil {
+				processor.imageTexture = texture
+			}
+		}
+	}
+
+	var result T
+	var fnError error
+
+	window := internal.GetWindow()
+	renderer := window.Renderer
+
+	processor.render(renderer)
+	window.Present()
+
+	resultChan := make(chan struct {
+		result T
+		err    error
+	}, 1)
+
+	go func() {
+		res, err := fn()
+		resultChan <- struct {
+			result T
+			err    error
+		}{result: res, err: err}
+	}()
+
+	running := true
+	functionComplete := false
+	var quitErr error
+
+	cancelPressed := false
+
+	for running {
+		if event := sdl.WaitEventTimeout(16); event != nil {
+			switch event.(type) {
+			case *sdl.QuitEvent:
+				running = false
+				quitErr = sdl.GetError()
+			case *sdl.KeyboardEvent, *sdl.ControllerButtonEvent, *sdl.ControllerAxisEvent, *sdl.JoyButtonEvent, *sdl.JoyAxisEvent, *sdl.JoyHatEvent:
+				inputEvent := internal.GetInputProcessor().ProcessSDLEvent(event)
+				// Check if cancel button was pressed
+				if options.CancelButton != constants.VirtualButtonUnassigned && inputEvent != nil && inputEvent.Pressed {
+					if inputEvent.Button == options.CancelButton {
+						cancelPressed = true
+						running = false
+					}
+				}
+			}
+		}
+
+		if !functionComplete {
+			select {
+			case processResult := <-resultChan:
+				result = processResult.result
+				fnError = processResult.err
+				functionComplete = true
+				processor.isProcessing = false
+				processor.completeTime = time.Now()
+			default:
+			}
+		} else {
+			if time.Since(processor.completeTime) > 350*time.Millisecond {
+				running = false
+			}
+		}
+
+		processor.render(renderer)
+		window.Present()
+	}
+
+	if processor.imageTexture != nil {
+		processor.imageTexture.Destroy()
+	}
+
+	// Check if cancelled via button press
+	if cancelPressed {
+		return result, ErrCancelled
+	}
+
+	// Prioritize function error over quit error
+	if fnError != nil {
+		return result, fnError
+	}
+
+	if quitErr != nil {
+		return result, quitErr
+	}
+
+	return result, nil
+}
+
+// imageDrawSize returns the width and height at which the image should be
+// drawn, scaled down to fit the window while preserving aspect ratio.
+func (p *processMessage) imageDrawSize() (int32, int32) {
+	width := p.imageWidth
+	height := p.imageHeight
+
+	if width == 0 {
+		width = p.window.GetWidth()
+	}
+	if height == 0 {
+		height = p.window.GetHeight()
+	}
+
+	windowWidth := p.window.GetWidth()
+	windowHeight := p.window.GetHeight()
+	if width > windowWidth || height > windowHeight {
+		scaleX := float64(windowWidth) / float64(width)
+		scaleY := float64(windowHeight) / float64(height)
+		scale := scaleX
+		if scaleY < scaleX {
+			scale = scaleY
+		}
+		width = int32(float64(width) * scale)
+		height = int32(float64(height) * scale)
+	}
+
+	return width, height
+}
+
+func (p *processMessage) render(renderer *sdl.Renderer) {
+
+	if p.showBG && internal.GetWindow().Background != nil {
+		internal.GetWindow().RenderBackground()
+	} else {
+		renderer.SetDrawColor(0, 0, 0, 255)
+		renderer.Clear()
+	}
+
+	font := internal.Fonts.SmallFont
+	maxWidth := p.window.GetWidth() * 3 / 4
+	winW := p.window.GetWidth()
+	winH := p.window.GetHeight()
+	white := sdl.Color{R: 255, G: 255, B: 255, A: 255}
+
+	var imgW, imgH int32
+	if p.imageTexture != nil {
+		imgW, imgH = p.imageDrawSize()
+	}
+
+	messagePresent := strings.TrimSpace(p.message) != ""
+
+	switch {
+	case p.showProgressBar:
+		if p.imageTexture != nil {
+			renderer.Copy(p.imageTexture, nil, &sdl.Rect{X: (winW - imgW) / 2, Y: (winH - imgH) / 2, W: imgW, H: imgH})
+		}
+		// The bar goes below however many lines the message wraps into; a
+		// fixed two-line layout put the third line of a long file name under
+		// the bar. (DSFetch fork.)
+		lines := 0
+		if messagePresent {
+			lines = internal.MultilineTextLines(p.message, font, maxWidth)
+		}
+		textY, barY := internal.ProgressLayout(winH, int32(font.Height()), lines, 12, 40)
+		if messagePresent {
+			internal.RenderMultilineText(renderer, p.message, font, maxWidth, winW/2, textY, white)
+		}
+		p.renderProgressBar(renderer, barY)
+
+	case p.imageTexture != nil && messagePresent:
+		// Stack the image above the message as one vertically-centered group so
+		// the two never overlap — they otherwise both anchor to the window's
+		// midpoint and draw on top of each other.
+		const gap = 24
+		textH := internal.MultilineTextHeight(p.message, font, maxWidth)
+		imgY, textCenterY := internal.StackedLayout(winH, imgH, textH, gap)
+		renderer.Copy(p.imageTexture, nil, &sdl.Rect{X: (winW - imgW) / 2, Y: imgY, W: imgW, H: imgH})
+		internal.RenderMultilineText(renderer, p.message, font, maxWidth, winW/2, textCenterY, white)
+
+	default:
+		if p.imageTexture != nil {
+			renderer.Copy(p.imageTexture, nil, &sdl.Rect{X: (winW - imgW) / 2, Y: (winH - imgH) / 2, W: imgW, H: imgH})
+		}
+		if messagePresent {
+			internal.RenderMultilineText(renderer, p.message, font, maxWidth, winW/2, winH/2, white)
+		}
+	}
+
+	if len(p.footerHelpItems) > 0 {
+		renderFooter(renderer, internal.Fonts.SmallFont, p.footerHelpItems, 30, true, len(p.footerHelpItems) == 1)
+	}
+}
+
+func (p *processMessage) renderProgressBar(renderer *sdl.Renderer, barY int32) {
+	windowWidth := p.window.GetWidth()
+
+	barWidth := windowWidth * 3 / 4
+	if barWidth > 900 {
+		barWidth = 900
+	}
+	barHeight := int32(40)
+	barX := (windowWidth - barWidth) / 2
+
+	progressBarBg := sdl.Rect{
+		X: barX,
+		Y: barY,
+		W: barWidth,
+		H: barHeight,
+	}
+
+	progressWidth := int32(float64(barWidth) * p.progress.Load())
+
+	// Use smooth progress bar with anti-aliased rounded edges
+	internal.DrawSmoothProgressBar(
+		renderer,
+		&progressBarBg,
+		progressWidth,
+		sdl.Color{R: 50, G: 50, B: 50, A: 255},
+		sdl.Color{R: 100, G: 150, B: 255, A: 255},
+	)
+
+	percentText := fmt.Sprintf("%.0f%%", p.progress.Load()*100)
+
+	percentSurface, err := internal.Fonts.SmallFont.RenderUTF8Blended(percentText, sdl.Color{R: 255, G: 255, B: 255, A: 255})
+	if err == nil {
+		percentTexture, err := renderer.CreateTextureFromSurface(percentSurface)
+		if err == nil {
+			textX := barX + (barWidth-percentSurface.W)/2
+			textY := barY + (barHeight-percentSurface.H)/2
+
+			percentRect := &sdl.Rect{
+				X: textX,
+				Y: textY,
+				W: percentSurface.W,
+				H: percentSurface.H,
+			}
+			renderer.Copy(percentTexture, nil, percentRect)
+			percentTexture.Destroy()
+		}
+		percentSurface.Free()
+	}
+}
+
+// isSVG checks if the data is SVG format
+func isSVG(data []byte) bool {
+	// Check for SVG header
+	return bytes.Contains(data[:min(len(data), 512)], []byte("<svg")) ||
+		bytes.Contains(data[:min(len(data), 512)], []byte("<?xml"))
+}
+
+// loadImageTexture loads an image (PNG, JPEG, or SVG) from bytes and creates an SDL texture.
+// The image is scaled down to the target width/height before creating the GPU texture
+// to avoid exhausting VRAM on devices with limited GPU memory.
+func loadImageTexture(renderer *sdl.Renderer, imageData []byte, width, height int32) (*sdl.Texture, error) {
+	if isSVG(imageData) {
+		return loadSVGTexture(renderer, imageData, width, height)
+	}
+	return loadRasterTexture(renderer, imageData, width, height)
+}
+
+// loadRasterTexture loads a raster image (PNG, JPEG, etc.) from bytes.
+// It writes the bytes to a temporary file, loads as a CPU-side surface,
+// scales the surface down to the target dimensions, then creates the
+// GPU texture. This avoids exhausting GPU texture memory on devices
+// with limited VRAM (e.g. ARM7).
+func loadRasterTexture(renderer *sdl.Renderer, imageData []byte, maxWidth, maxHeight int32) (*sdl.Texture, error) {
+	img.Init(img.INIT_PNG | img.INIT_JPG)
+
+	ext := ".png"
+	if len(imageData) >= 2 && imageData[0] == 0xFF && imageData[1] == 0xD8 {
+		ext = ".jpg"
+	}
+	tmpFile, err := os.CreateTemp("", "gabagool-img-*"+ext)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmpFile.Write(imageData); err != nil {
+		tmpFile.Close()
+		return nil, fmt.Errorf("failed to write image to temp file: %w", err)
+	}
+	tmpFile.Close()
+
+	surface, err := img.Load(tmpPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load surface from temp file: %w", err)
+	}
+	defer surface.Free()
+
+	// Scale the surface down before creating the GPU texture to avoid
+	// exhausting GPU texture memory on devices with limited VRAM (e.g. ARM7).
+	textureSurface := surface
+	if maxWidth > 0 && maxHeight > 0 {
+		imageW, imageH := surface.W, surface.H
+		if imageW > maxWidth {
+			ratio := float32(maxWidth) / float32(imageW)
+			imageW = maxWidth
+			imageH = int32(float32(imageH) * ratio)
+		}
+		if imageH > maxHeight {
+			ratio := float32(maxHeight) / float32(imageH)
+			imageH = maxHeight
+			imageW = int32(float32(imageW) * ratio)
+		}
+		if imageW < surface.W || imageH < surface.H {
+			scaled, err := sdl.CreateRGBSurfaceWithFormat(0, imageW, imageH, 32, surface.Format.Format)
+			if err == nil {
+				dstRect := sdl.Rect{X: 0, Y: 0, W: imageW, H: imageH}
+				if err := surface.BlitScaled(nil, scaled, &dstRect); err == nil {
+					textureSurface = scaled
+					defer scaled.Free()
+				} else {
+					scaled.Free()
+				}
+			}
+		}
+	}
+
+	texture, err := renderer.CreateTextureFromSurface(textureSurface)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create texture from surface: %w", err)
+	}
+	return texture, nil
+}
+
+// loadSVGTexture rasterizes an SVG and creates an SDL texture
+func loadSVGTexture(renderer *sdl.Renderer, svgData []byte, width, height int32) (*sdl.Texture, error) {
+	// Parse SVG
+	icon, err := oksvg.ReadIconStream(bytes.NewReader(svgData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse SVG: %w", err)
+	}
+
+	// Determine dimensions
+	svgWidth := int(icon.ViewBox.W)
+	svgHeight := int(icon.ViewBox.H)
+
+	// Use provided dimensions, or default to SVG viewBox
+	if width == 0 || height == 0 {
+		width = int32(svgWidth)
+		height = int32(svgHeight)
+	}
+
+	// Create image to render SVG into
+	img := image.NewRGBA(image.Rect(0, 0, int(width), int(height)))
+
+	// Create rasterizer
+	scanner := rasterx.NewScannerGV(int(width), int(height), img, img.Bounds())
+	raster := rasterx.NewDasher(int(width), int(height), scanner)
+
+	// Set the icon to the target size
+	icon.SetTarget(0, 0, float64(width), float64(height))
+
+	// Draw SVG
+	icon.Draw(raster, 1.0)
+
+	// Convert image.RGBA to PNG bytes
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, fmt.Errorf("failed to encode SVG as PNG: %w", err)
+	}
+
+	// Load the PNG as a texture
+	return loadRasterTexture(renderer, buf.Bytes(), width, height)
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

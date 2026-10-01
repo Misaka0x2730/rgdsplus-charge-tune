@@ -1,0 +1,156 @@
+// Package constants defines shared constants, types, and configuration values
+// used throughout the gabagool UI framework.
+package constants
+
+import (
+	"os"
+	"time"
+)
+
+// Development is the environment variable value for development mode.
+const Development = "DEV"
+
+// Environment variable names used throughout the gabagool framework.
+const (
+	// EnvironmentEnvVar controls the runtime mode (set to "DEV" for development).
+	EnvironmentEnvVar = "ENVIRONMENT"
+
+	// BackgroundPathEnvVar specifies a custom background image path.
+	BackgroundPathEnvVar = "BACKGROUND_PATH"
+
+	// NextvalPathEnvVar specifies the path to the NextUI nextval config file (dev mode).
+	NextvalPathEnvVar = "NEXTVAL_PATH"
+
+	// NitratesEnvVar enables debug logging when set.
+	NitratesEnvVar = "NITRATES"
+
+	// InputCaptureEnvVar triggers the input logger wizard when set.
+	InputCaptureEnvVar = "INPUT_CAPTURE"
+
+	// WindowWidthEnvVar overrides the window width in dev mode.
+	WindowWidthEnvVar = "WINDOW_WIDTH"
+
+	// WindowHeightEnvVar overrides the window height in dev mode.
+	WindowHeightEnvVar = "WINDOW_HEIGHT"
+
+	// FallbackFontEnvVar specifies a fallback font path.
+	FallbackFontEnvVar = "FALLBACK_FONT"
+
+	// InputMappingPathEnvVar specifies a custom input mapping file path.
+	InputMappingPathEnvVar = "INPUT_MAPPING_PATH"
+
+	// FlipFaceButtonsEnvVar disables the default A↔B and X↔Y swap when set.
+	// By default, gabagool swaps face buttons for Nintendo-style layouts.
+	// Set this to "1" or "true" for direct mapping (A=A, B=B, X=X, Y=Y).
+	FlipFaceButtonsEnvVar = "FLIP_FACE_BUTTONS"
+
+	// DisableKeyboardInputEnvVar suppresses SDL keyboard events when set to "1" or "true".
+	// Useful on devices where the CFW remaps controller buttons to keyboard keys,
+	// causing duplicate events (e.g. Miyoo Flip V2 with MinUI).
+	DisableKeyboardInputEnvVar = "DISABLE_KEYBOARD_INPUT"
+
+	// DisableControllerInputEnvVar suppresses SDL game controller events (buttons and axes)
+	// when set to "1" or "true".
+	DisableControllerInputEnvVar = "DISABLE_CONTROLLER_INPUT"
+
+	// DisableJoystickInputEnvVar suppresses SDL raw joystick events (buttons, axes, hats)
+	// when set to "1" or "true".
+	DisableJoystickInputEnvVar = "DISABLE_JOYSTICK_INPUT"
+)
+
+// IsDevMode returns true if running in development mode (ENVIRONMENT=DEV).
+func IsDevMode() bool {
+	return os.Getenv(EnvironmentEnvVar) == Development
+}
+
+// VirtualButton represents an abstract input button, mapped from physical hardware.
+// This abstraction allows gabagool to work with different controller configurations.
+type VirtualButton int
+
+const (
+	VirtualButtonUnassigned VirtualButton = iota
+	VirtualButtonUp
+	VirtualButtonDown
+	VirtualButtonLeft
+	VirtualButtonRight
+	VirtualButtonA
+	VirtualButtonB
+	VirtualButtonX
+	VirtualButtonY
+	VirtualButtonL1
+	VirtualButtonL2
+	VirtualButtonR1
+	VirtualButtonR2
+	VirtualButtonStart
+	VirtualButtonSelect
+	VirtualButtonMenu
+	VirtualButtonF1
+	VirtualButtonF2
+	VirtualButtonVolumeUp
+	VirtualButtonVolumeDown
+	VirtualButtonPower
+)
+
+func (vb VirtualButton) GetName() string {
+	switch vb {
+	case VirtualButtonUnassigned:
+		return "Unassigned"
+	case VirtualButtonUp:
+		return "Up"
+	case VirtualButtonDown:
+		return "Down"
+	case VirtualButtonLeft:
+		return "Left"
+	case VirtualButtonRight:
+		return "Right"
+	case VirtualButtonA:
+		return "A"
+	case VirtualButtonB:
+		return "B"
+	case VirtualButtonX:
+		return "X"
+	case VirtualButtonY:
+		return "Y"
+	case VirtualButtonL1:
+		return "L1"
+	case VirtualButtonL2:
+		return "L2"
+	case VirtualButtonR1:
+		return "R1"
+	case VirtualButtonR2:
+		return "R2"
+	case VirtualButtonStart:
+		return "Start"
+	case VirtualButtonSelect:
+		return "Select"
+	case VirtualButtonMenu:
+		return "Menu"
+	case VirtualButtonF1:
+		return "F1"
+	case VirtualButtonF2:
+		return "F2"
+	case VirtualButtonVolumeUp:
+		return "VolumeUp"
+	case VirtualButtonVolumeDown:
+		return "VolumeDown"
+	case VirtualButtonPower:
+		return "Power"
+	default:
+		return "Unknown"
+	}
+}
+
+// TextAlign specifies horizontal text alignment.
+type TextAlign int
+
+const (
+	TextAlignLeft   TextAlign = iota // Align text to the left edge
+	TextAlignCenter                  // Center text horizontally
+	TextAlignRight                   // Align text to the right edge
+)
+
+// Default timing and spacing constants.
+const (
+	DefaultInputDelay         = 20 * time.Millisecond // Debounce delay between input events
+	DefaultTitleSpacing int32 = 5                     // Vertical spacing below title text
+)

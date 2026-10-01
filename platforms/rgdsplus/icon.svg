@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RG DS Plus Charge Tune icon, 240x180 like the other entries of the
+     console's Applications and Ports menus. Rendered to icon.png by
+     `task icon` (cmd/mkicon); keep to shapes oksvg supports. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="180" viewBox="0 0 240 180">
+  <!-- tile -->
+  <rect x="32" y="2" width="176" height="176" rx="35" ry="35" fill="#2f9e5b"/>
+  <!-- shadow of the glyphs -->
+  <g fill="#000000" fill-opacity="0.22" transform="translate(3,4)">
+    <rect x="93" y="28" width="30" height="15" rx="4" ry="4"/>
+    <rect x="74" y="40" width="68" height="114" rx="14" ry="14"/>
+    <rect x="164" y="44" width="10" height="106" rx="5" ry="5"/>
+    <circle cx="169" cy="80" r="15"/>
+  </g>
+  <!-- battery -->
+  <rect x="93" y="28" width="30" height="15" rx="4" ry="4" fill="#ffffff"/>
+  <rect x="74" y="40" width="68" height="114" rx="14" ry="14" fill="#ffffff"/>
+  <!-- bolt -->
+  <path d="M 116 54 L 90 102 L 106 102 L 98 140 L 127 88 L 111 88 L 121 54 Z" fill="#2f9e5b"/>
+  <!-- tuning slider -->
+  <rect x="164" y="44" width="10" height="106" rx="5" ry="5" fill="#ffffff"/>
+  <circle cx="169" cy="80" r="15" fill="#ffffff"/>
+  <circle cx="169" cy="80" r="6" fill="#2f9e5b"/>
+</svg>

@@ -1,0 +1,183 @@
+version: '3'
+
+# Console connection for deploy/logs/status/debug: put CONSOLE=<ip> (and
+# optionally CONSOLE_USER, PORTS_DIR, APPS_DIR) into .env or pass on the
+# command line:
+#   task deploy CONSOLE=192.168.1.50
+dotenv: ['.env']
+
+vars:
+  CONSOLE: '{{.CONSOLE | default ""}}'
+  CONSOLE_USER: '{{.CONSOLE_USER | default "root"}}'
+  # The stock menu lists Ports from both cards; TF2 (/mnt/sdcard) is the big one.
+  PORTS_DIR: '{{.PORTS_DIR | default "/mnt/sdcard/Ports"}}'
+  APP_DIR: '{{.PORTS_DIR}}/rgdsplus-charge-tune'
+  # Applications list entry (launcher + icon); it starts the copy in Ports.
+  APPS_DIR: '{{.APPS_DIR | default "/mnt/sdcard/Roms/APPS"}}'
+  # The name the console's menus show (launcher and icon file names).
+  APP_NAME: RG DS Plus Charge Tune
+  REPO_URL: https://github.com/Misaka0x2730/rgdsplus-charge-tune
+  SSH_TARGET: '{{.CONSOLE_USER}}@{{.CONSOLE}}'
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  GIT_COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo unknown
+  # macOS: Xcode.app and the Command Line Tools can disagree on the SDK
+  # (older ld + newer .tbd files -> "unknown architecture arm64e.x1").
+  # Pin cgo to the self-consistent CLT toolchain when it is installed.
+  GO_ENV:
+    sh: |
+      if [ "$(uname)" = Darwin ] && [ -z "${DEVELOPER_DIR:-}" ] && [ -x /Library/Developer/CommandLineTools/usr/bin/clang ]; then
+        echo "DEVELOPER_DIR=/Library/Developer/CommandLineTools"
+      fi
+  DOCKER_BUILD: docker buildx build --platform linux/arm64 -f docker/Dockerfile --target export
+  DOCKER_ARGS: --build-arg VERSION={{.VERSION}} --build-arg GIT_COMMIT={{.GIT_COMMIT}}
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  devroot:
+    desc: 'Create the fake console used by `task run` (devseed flags after --, e.g. -- -boot 03_boot.img)'
+    cmds:
+      - '{{.GO_ENV}} go run ./cmd/devseed {{.CLI_ARGS}}'
+    status:
+      - test -f devroot/dev/block/by-name/boot
+
+  run:
+    desc: Run on the Mac in a 1024x768 window (keyboard or any SDL gamepad)
+    deps: [devroot]
+    cmds:
+      - '{{.GO_ENV}} go run ./cmd/rgdsplus-charge-tune -dev -root ./devroot'
+
+  build:
+    desc: Build for the host (macOS)
+    cmds:
+      - '{{.GO_ENV}} go build -o build/rgdsplus-charge-tune ./cmd/rgdsplus-charge-tune'
+
+  test:
+    desc: Unit tests, including the gabagool fork
+    cmds:
+      - '{{.GO_ENV}} go test ./... github.com/BrandonKowalski/gabagool/v2/... {{.CLI_ARGS}}'
+
+  test:stock:
+    desc: 'Tests against a dump of the stock boot partition (STOCK_BOOT=<path>)'
+    requires:
+      vars: [STOCK_BOOT]
+    cmds:
+      - '{{.GO_ENV}} CHARGETUNE_STOCK_BOOT="{{.STOCK_BOOT}}" go test -count=1 -run Stock -v ./internal/bootimg/'
+
+  lint:
+    cmds:
+      - '{{.GO_ENV}} go vet ./... github.com/BrandonKowalski/gabagool/v2/...'
+
+  icon:
+    desc: Render platforms/rgdsplus/icon.png from icon.svg
+    cmds:
+      - go run ./cmd/mkicon
+
+  licenses:
+    desc: Collect the license texts of all linked Go modules into build/licenses
+    cmds:
+      - rm -rf build/licenses
+      - ./scripts/collect-licenses.sh build/licenses
+
+  build:arm64:
+    desc: Build the console binary in Docker (native arm64 on Apple Silicon)
+    cmds:
+      - rm -rf build/arm64
+      - '{{.DOCKER_BUILD}} {{.DOCKER_ARGS}} --output type=local,dest=build/arm64 .'
+      - 'echo "build image: $(cat build/arm64/BUILD_GLIBC)"; echo "binary needs: $(cat build/arm64/REQUIRED_GLIBC)"'
+
+  build:arm64:debug:
+    desc: Console build without optimisations, plus dlv
+    cmds:
+      - rm -rf build/arm64-debug
+      - '{{.DOCKER_BUILD}} {{.DOCKER_ARGS}} --build-arg DEBUG=1 --output type=local,dest=build/arm64-debug .'
+
+  package:
+    desc: Assemble dist/rgdsplus-charge-tune-<version>.zip (unzip into the root of TF1 or TF2)
+    deps: [build:arm64]
+    vars:
+      STAGE: dist/rgdsplus
+      APP: dist/rgdsplus/Ports/rgdsplus-charge-tune
+    cmds:
+      - rm -rf {{.STAGE}} dist/rgdsplus-charge-tune-*.zip
+      - mkdir -p {{.APP}}/data {{.APP}}/licenses {{.APP}}/docs/images
+      - cp "platforms/rgdsplus/launcher.sh" "{{.STAGE}}/Ports/{{.APP_NAME}}.sh"
+      - cp build/arm64/rgdsplus-charge-tune {{.APP}}/
+      - ./scripts/collect-licenses.sh {{.APP}}/licenses
+      - cp licenses/* {{.APP}}/licenses/
+      - cp LICENSE THIRD_PARTY.md {{.APP}}/
+      # README with its pictures and docs/how-it-works.md; the icon joins the
+      # pictures in docs/images, and the gabagool notes are linked on GitHub.
+      # Every local link of the packaged README must resolve.
+      - cp docs/images/* platforms/rgdsplus/icon.png {{.APP}}/docs/images/
+      - cp docs/how-it-works.md {{.APP}}/docs/
+      - >-
+        sed -e 's#"platforms/rgdsplus/icon.png"#"docs/images/icon.png"#'
+        -e 's#(third_party/gabagool/FORK.md)#({{.REPO_URL}}/blob/HEAD/third_party/gabagool/FORK.md)#'
+        README.md > {{.APP}}/README.md
+      - grep -q '"docs/images/icon.png"' {{.APP}}/README.md
+      - ./scripts/check-links.sh {{.APP}}/README.md {{.APP}}/docs/how-it-works.md
+      - cp platforms/rgdsplus/launcher.env.example {{.APP}}/data/
+      - chmod +x "{{.STAGE}}/Ports/{{.APP_NAME}}.sh" {{.APP}}/rgdsplus-charge-tune
+      # Both the Ports and the Applications menu show Imgs/<launcher name>.png.
+      - mkdir -p {{.STAGE}}/Ports/Imgs {{.STAGE}}/Roms/APPS/Imgs
+      - cp platforms/rgdsplus/icon.png "{{.STAGE}}/Ports/Imgs/{{.APP_NAME}}.png"
+      - cp platforms/rgdsplus/apps/launcher.sh "{{.STAGE}}/Roms/APPS/{{.APP_NAME}}.sh"
+      - cp platforms/rgdsplus/icon.png "{{.STAGE}}/Roms/APPS/Imgs/{{.APP_NAME}}.png"
+      - chmod +x "{{.STAGE}}/Roms/APPS/{{.APP_NAME}}.sh"
+      # The name carries the version About shows (tag, or commit hash).
+      - cd {{.STAGE}} && zip -qr ../rgdsplus-charge-tune-{{.VERSION}}.zip Ports Roms
+      - echo "dist/rgdsplus-charge-tune-{{.VERSION}}.zip"
+
+  _require-console:
+    internal: true
+    preconditions:
+      - sh: '[ -n "{{.CONSOLE}}" ]'
+        msg: 'Set CONSOLE=<console ip> (in .env or on the command line)'
+
+  deploy:
+    desc: Copy the app to the console over SSH (keeps data/ except the example)
+    deps: [package]
+    cmds:
+      - task: _require-console
+      # No rsync or sftp-server on the stock firmware: stream a tar over ssh.
+      - >-
+        COPYFILE_DISABLE=1 tar --no-xattrs -C dist/rgdsplus/Ports -cf - . |
+        ssh {{.SSH_TARGET}} 'mkdir -p {{.PORTS_DIR}} && tar -C {{.PORTS_DIR}} -xf - && sync'
+      - >-
+        COPYFILE_DISABLE=1 tar --no-xattrs -C dist/rgdsplus/Roms/APPS -cf - . |
+        ssh {{.SSH_TARGET}} 'mkdir -p {{.APPS_DIR}} && tar -C {{.APPS_DIR}} -xf - && sync'
+
+  logs:
+    desc: Follow the app log on the console
+    cmds:
+      - task: _require-console
+      - ssh {{.SSH_TARGET}} 'tail -n 100 -F {{.APP_DIR}}/data/rgdsplus-charge-tune.log {{.APP_DIR}}/data/launcher.log'
+
+  status:
+    desc: Print what the app sees on the console (charger values, boot partition, backups); reads only
+    cmds:
+      - task: _require-console
+      - ssh {{.SSH_TARGET}} '{{.APP_DIR}}/rgdsplus-charge-tune -status'
+
+  debug:
+    desc: Deploy a debug build and start dlv on the console (attach from VS Code)
+    deps: [build:arm64:debug]
+    cmds:
+      - task: _require-console
+      - >-
+        COPYFILE_DISABLE=1 tar --no-xattrs -C build/arm64-debug -cf - rgdsplus-charge-tune dlv |
+        ssh {{.SSH_TARGET}} 'tar -C {{.APP_DIR}} -xf -'
+      - ssh {{.SSH_TARGET}} 'pkill -f "dlv exec" || true'
+      - >-
+        ssh -t {{.SSH_TARGET}} 'cd {{.APP_DIR}} && export LD_LIBRARY_PATH={{.APP_DIR}}/lib:$LD_LIBRARY_PATH &&
+        [ -f data/launcher.env ] && . data/launcher.env;
+        ./dlv exec --headless --listen=:2345 --api-version=2 --accept-multiclient ./rgdsplus-charge-tune'
+
+  clean:
+    cmds:
+      - rm -rf build dist
