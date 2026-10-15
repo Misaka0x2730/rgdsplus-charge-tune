@@ -8,9 +8,9 @@ require (
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef
 	github.com/veandco/go-sdl2 v0.4.40
 	go.uber.org/atomic v1.12.0
-	golang.org/x/image v0.46.0
-	golang.org/x/sys v0.48.0
-	golang.org/x/text v0.42.0
+	golang.org/x/image v0.47.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/text v0.43.0
 )
 
 require (
